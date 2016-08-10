@@ -3,6 +3,7 @@ import numpy as np
 import os
 import re
 
+from tensorflow.python.framework import graph_util
 from tensorflow.python.platform import gfile
 from datetime import datetime
 
@@ -43,7 +44,7 @@ def get_random_input_images(sess, image_dir, batch_size,
         image = sess.run(decode_tensor,
                          feed_dict={image_data_tensor: image_data})
         image = image * 2. / 255. - 1.
-        images.append(image)
+        images.append(image.flatten())
     return images
 
 
@@ -56,9 +57,9 @@ def fc_layer(in_tensor, in_size, out_size, activation_func, weight_init, name):
                            shape=[out_size],
                            initializer=tf.constant_initializer())
     affine = tf.nn.bias_add(tf.matmul(in_tensor, weights, name=name + '/mul'),
-                            name=name + '/affine')
+                            bias, name=name + '/affine')
     out_tensor = activation_func(affine, name=name + '/activations')
-    tf.histogram_summary('summary/weights/' + weights, weights)
+    tf.histogram_summary('summary/weights/' + name, weights)
     tf.histogram_summary('summary/activations/' + name, out_tensor)
     return out_tensor
 
@@ -69,7 +70,7 @@ def model(input_tensor):
     fc1 = fc_layer(flat_tensor, dim, dim / 2, tf.nn.relu, 0.02, 'fc1')
     fc2 = fc_layer(fc1, dim / 2, dim / 4, tf.nn.relu, 0.02, 'fc2')
     features = fc_layer(fc2, dim / 4, 1024, tf.nn.relu, 0.02, 'features')
-    fc4 = fc_layer(fc3, 1024, dim / 4, tf.nn.relu, 0.02, 'fc4')
+    fc4 = fc_layer(features, 1024, dim / 4, tf.nn.relu, 0.02, 'fc4')
     fc5 = fc_layer(fc4, dim / 4, dim / 2, tf.nn.relu, 0.02, 'fc5')
     out_tensor = fc_layer(fc5, dim / 2, dim, tf.nn.relu, 0.02, 'output')
     return features, out_tensor
@@ -82,12 +83,10 @@ def add_optimization(in_tensor, out_tensor, learning_rate):
 
 
 def main(_):
+    flat_dim = IMAGE_SIZE * IMAGE_SIZE * INPUT_CHANNELS
 
     in_tensor = tf.placeholder(tf.float32,
-                               shape=[None,
-                                      IMAGE_SIZE,
-                                      IMAGE_SIZE,
-                                      INPUT_CHANNELS],
+                               shape=[None, flat_dim],
                                name='input_image')
     features, out_tensor = model(in_tensor)
 
@@ -158,6 +157,11 @@ def main(_):
             model_file = os.path.join(FLAGS.summary_dir, 'model.ckpt')
             saver.save(sess, model_file, global_step=step)
 
+    output_graph_def = graph_util.convert_variables_to_constants(
+        sess, graph.as_graph_def(), ['output'])
+    with gfile.FastGFile(os.path.join(FLAGS.summary_dir, 'ae_graph.pb'), 
+                         'wb') as f:
+        f.write(output_graph_def.SerializeToString())
     writer.close()
 
 
